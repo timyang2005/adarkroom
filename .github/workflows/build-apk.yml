@@ -1,0 +1,119 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Cordova CLI
+        run: npm install -g cordova
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install required Android SDK components
+        run: |
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          yes | sdkmanager --licenses || true
+
+      - name: Create Cordova project
+        run: |
+          cordova create /tmp/adarkroom-build com.doublespeakgames.adarkroom "A Dark Room"
+
+      - name: Copy game sources as www/
+        run: |
+          cd /tmp/adarkroom-build
+          rm -rf www
+          cp -r "$GITHUB_WORKSPACE" www
+          # Remove non-game files that shouldn't be in www/
+          rm -rf www/.git www/.github www/tools www/doc
+          rm -f www/.gitattributes www/.gitignore www/.jshintrc
+          rm -f www/package.json www/yarn.lock www/dev-server.js
+          rm -f web.config www/browserWarning.html www/mobileWarning.html
+          rm -f www/README.md www/LICENSE.md www/contributing.md
+
+      - name: Adapt index.html for mobile / Cordova
+        run: |
+          cd /tmp/adarkroom-build/www
+          # Add viewport meta tag after charset meta
+          sed -i '/<meta charset="UTF-8"\/>/a \	<meta name="viewport" content="width=device-width, initial-scale=0.42, minimum-scale=0.25, maximum-scale=2.5, user-scalable=yes" />' index.html
+          # Replace CDN jQuery with local copy
+          sed -i 's|<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.1/jquery.min.js"></script>|<script src="lib/jquery.min.js"></script>|' index.html
+          # Remove jQuery fallback script block
+          sed -i '/<script>$/,/<\/script>/{/if(!window.jQuery)/,/^[[:space:]]*<\/script>/d}' index.html
+          # Remove Google Analytics block
+          sed -i '/<!-- Google tag/,/^[[:space:]]*<\/script>$/d' index.html
+          # Add cordova.js before </head>
+          sed -i 's|<\/head>|\t<script src="cordova.js"><\/script>\n<\/head>|' index.html
+          echo "=== index.html head ==="
+          head -30 index.html
+
+      - name: Write Cordova config.xml
+        run: |
+          cat > /tmp/adarkroom-build/config.xml << 'CONFIGEOF'
+<?xml version='1.0' encoding='utf-8'?>
+<widget id="com.doublespeakgames.adarkroom" version="1.4.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+    <name>A Dark Room</name>
+    <description>A minimalist text adventure, packaged for Android with Apache Cordova.</description>
+    <author email="michael@doublespeakgames.com" href="https://github.com/doublespeakgames/adarkroom">Michael Townsend and friends</author>
+    <content src="index.html" />
+    <access origin="*" />
+    <allow-intent href="http://*/*" />
+    <allow-intent href="https://*/*" />
+    <allow-intent href="market:*" />
+    <preference name="Orientation" value="default" />
+    <preference name="BackgroundColor" value="0xFF000000" />
+    <preference name="android-targetSdkVersion" value="34" />
+    <preference name="android-compileSdkVersion" value="34" />
+    <platform name="android">
+        <preference name="android-minSdkVersion" value="24" />
+        <icon src="www/img/adr.png" />
+    </platform>
+</widget>
+CONFIGEOF
+          cat /tmp/adarkroom-build/config.xml
+
+      - name: Add Android platform
+        run: |
+          cd /tmp/adarkroom-build
+          cordova platform add android@13
+
+      - name: Build Debug APK
+        run: |
+          cd /tmp/adarkroom-build
+          cordova build android --debug
+
+      - name: Locate APK
+        id: find_apk
+        run: |
+          APK=$(find /tmp/adarkroom-build/platforms/android/app/build/outputs/apk/debug -name "*.apk" | head -1)
+          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          echo "APK: $APK"
+          ls -lh "$APK"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adarkroom-debug-apk
+          path: ${{ steps.find_apk.outputs.apk_path }}
+          if-no-files-found: error
