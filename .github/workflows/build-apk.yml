@@ -19,7 +19,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Setup Java JDK
         uses: actions/setup-java@v4
@@ -30,32 +30,42 @@ jobs:
       - name: Install Cordova CLI
         run: npm install -g cordova
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: 11076708
+      - name: Setup Android SDK manually
+        run: |
+          export ANDROID_HOME=$HOME/android-sdk
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          cd /tmp
+          curl -L -o cmdtools.zip "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          unzip -q cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"
+          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "Android SDK commandline tools installed"
+          ls "$ANDROID_HOME/cmdline-tools/latest/bin/"
 
       - name: Install Android SDK components
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          which sdkmanager
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           sdkmanager --list_installed
 
-      - name: Diagnose environment
+      - name: Verify environment
         run: |
           echo "=== Node ===" && node --version
-          echo "=== npm ===" && npm --version
           echo "=== Java ===" && java -version
-          echo "=== JAVA_HOME ===" && echo $JAVA_HOME
+          echo "=== JAVA_HOME ===" && echo "$JAVA_HOME"
           echo "=== Cordova ===" && cordova --version
-          echo "=== ANDROID_HOME ===" && echo $ANDROID_HOME
-          echo "=== ANDROID_SDK_ROOT ===" && echo $ANDROID_SDK_ROOT
-          echo "=== platform-tools ===" && ls $ANDROID_HOME/platform-tools/ | head
-          echo "=== build-tools ===" && ls $ANDROID_HOME/build-tools/
-          echo "=== platforms ===" && ls $ANDROID_HOME/platforms/
+          echo "=== ANDROID_HOME ===" && echo "$ANDROID_HOME"
+          echo "=== ANDROID_SDK_ROOT ===" && echo "$ANDROID_SDK_ROOT"
+          echo "=== sdkmanager ===" && which sdkmanager
+          echo "=== adb ===" && which adb
+          echo "=== build-tools ===" && ls "$ANDROID_HOME/build-tools/"
+          echo "=== platforms ===" && ls "$ANDROID_HOME/platforms/"
 
       - name: Create Cordova project
         run: cordova create /tmp/adarkroom-build com.doublespeakgames.adarkroom "A Dark Room"
@@ -144,7 +154,6 @@ jobs:
           with open("/tmp/adarkroom-build/config.xml", "w", encoding="utf-8") as f:
               f.write(config)
           print("config.xml written successfully")
-          print(config)
           '
 
       - name: Add Android platform
@@ -153,34 +162,46 @@ jobs:
           cordova platform add android@13
           echo "=== Platforms ==="
           cordova platform ls
+          echo "=== config.xml ==="
+          cat config.xml
 
       - name: Build Debug APK
+        id: build
         run: |
           cd /tmp/adarkroom-build
-          cordova build android --debug --verbose 2>&1 | tee /tmp/build.log | tail -200
+          set +e
+          cordova build android --debug 2>&1 | tee /tmp/build.log
+          BUILD_EXIT=${PIPESTATUS[0]}
+          echo "build_exit=$BUILD_EXIT" >> "$GITHUB_OUTPUT"
+          echo "Build exit code: $BUILD_EXIT"
+          if [ "$BUILD_EXIT" -ne 0 ]; then
+            echo "=== Build failed. Last 100 lines ==="
+            tail -100 /tmp/build.log
+          fi
+          exit $BUILD_EXIT
         shell: bash
 
-      - name: Locate APK
+      - name: Find APK
         id: find_apk
-        if: always()
+        if: success()
         run: |
-          APK=$(find /tmp/adarkroom-build/platforms/android/app/build/outputs/apk -name "*.apk" 2>/dev/null | head -1)
-          if [ -n "$APK" ]; then
-            echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
-            echo "APK found: $APK"
-            ls -lh "$APK"
-          else
-            echo "No APK found!"
-            echo "=== Build output dir ==="
-            find /tmp/adarkroom-build/platforms/android -name "*.apk" -o -name "build" -type d 2>/dev/null | head -20
-            echo "=== Last 50 lines of build log ==="
-            tail -50 /tmp/build.log
-            exit 1
-          fi
+          APK=$(find /tmp/adarkroom-build/platforms/android/app/build/outputs/apk/debug -name "*.apk" | head -1)
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          echo "APK: $APK"
+          ls -lh "$APK"
 
       - name: Upload APK artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: adarkroom-debug-apk
           path: ${{ steps.find_apk.outputs.apk_path }}
           if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /tmp/build.log
+          if-no-files-found: ignore
