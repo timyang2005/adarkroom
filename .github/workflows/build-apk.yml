@@ -32,11 +32,30 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
 
-      - name: Install required Android SDK components
+      - name: Install Android SDK components
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          which sdkmanager
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           yes | sdkmanager --licenses || true
+          sdkmanager --list_installed
+
+      - name: Diagnose environment
+        run: |
+          echo "=== Node ===" && node --version
+          echo "=== npm ===" && npm --version
+          echo "=== Java ===" && java -version
+          echo "=== JAVA_HOME ===" && echo $JAVA_HOME
+          echo "=== Cordova ===" && cordova --version
+          echo "=== ANDROID_HOME ===" && echo $ANDROID_HOME
+          echo "=== ANDROID_SDK_ROOT ===" && echo $ANDROID_SDK_ROOT
+          echo "=== platform-tools ===" && ls $ANDROID_HOME/platform-tools/ | head
+          echo "=== build-tools ===" && ls $ANDROID_HOME/build-tools/
+          echo "=== platforms ===" && ls $ANDROID_HOME/platforms/
 
       - name: Create Cordova project
         run: cordova create /tmp/adarkroom-build com.doublespeakgames.adarkroom "A Dark Room"
@@ -62,7 +81,6 @@ jobs:
           with open('index.html', 'r', encoding='utf-8') as f:
               html = f.read()
 
-          # 1. Add viewport meta tag after charset meta
           viewport = '<meta name="viewport" content="width=device-width, initial-scale=0.42, minimum-scale=0.25, maximum-scale=2.5, user-scalable=yes" />'
           html = re.sub(
               r'(<meta charset="UTF-8"[^>]*>)',
@@ -70,21 +88,18 @@ jobs:
               html, count=1
           )
 
-          # 2. Replace CDN jQuery with local lib/jquery.min.js
           html = re.sub(
               r'<script src="https://ajax\.googleapis\.com/ajax/libs/jquery/[^"]+"></script>\s*<script>\s*if\(!window\.jQuery\).*?</script>',
               '<script src="lib/jquery.min.js"></script>',
               html, count=1, flags=re.DOTALL
           )
 
-          # 3. Remove Google Analytics block
           html = re.sub(
               r'\s*<!-- Google tag.*?</script>\s*',
               '\n\t',
               html, count=1, flags=re.DOTALL
           )
 
-          # 4. Add cordova.js before </head>
           html = re.sub(
               r'(</head>)',
               r'\t<script src="cordova.js"></script>\n\1',
@@ -136,19 +151,32 @@ jobs:
         run: |
           cd /tmp/adarkroom-build
           cordova platform add android@13
+          echo "=== Platforms ==="
+          cordova platform ls
 
       - name: Build Debug APK
         run: |
           cd /tmp/adarkroom-build
-          cordova build android --debug
+          cordova build android --debug --verbose 2>&1 | tee /tmp/build.log | tail -200
+        shell: bash
 
       - name: Locate APK
         id: find_apk
+        if: always()
         run: |
-          APK=$(find /tmp/adarkroom-build/platforms/android/app/build/outputs/apk/debug -name "*.apk" | head -1)
-          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
-          echo "APK: $APK"
-          ls -lh "$APK"
+          APK=$(find /tmp/adarkroom-build/platforms/android/app/build/outputs/apk -name "*.apk" 2>/dev/null | head -1)
+          if [ -n "$APK" ]; then
+            echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+            echo "APK found: $APK"
+            ls -lh "$APK"
+          else
+            echo "No APK found!"
+            echo "=== Build output dir ==="
+            find /tmp/adarkroom-build/platforms/android -name "*.apk" -o -name "build" -type d 2>/dev/null | head -20
+            echo "=== Last 50 lines of build log ==="
+            tail -50 /tmp/build.log
+            exit 1
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
