@@ -16,192 +16,229 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
       - name: Setup Java JDK
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install Cordova CLI
-        run: npm install -g cordova
-
-      - name: Setup Android SDK manually
+      - name: Setup Android SDK
         run: |
-          export ANDROID_HOME=$HOME/android-sdk
-          export ANDROID_SDK_ROOT=$HOME/android-sdk
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          mkdir -p "$ANDROID_HOME/cmdline-tools"
-          cd /tmp
-          curl -L -o cmdtools.zip "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
-          unzip -q cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"
-          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          echo "Android SDK commandline tools installed"
-          ls "$ANDROID_HOME/cmdline-tools/latest/bin/"
-
-      - name: Install Android SDK components
-        run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ANDROID_SDK=/usr/local/lib/android/sdk
+          echo "ANDROID_HOME=$ANDROID_SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK" >> "$GITHUB_ENV"
+          echo "$ANDROID_SDK/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "Pre-installed SDK contents:"
+          ls -la "$ANDROID_SDK" 2>/dev/null || echo "No pre-installed SDK"
           yes | sdkmanager --licenses || true
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-          sdkmanager --list_installed
+          sdkmanager --list_installed | head -20
 
-      - name: Verify environment
+      - name: Create Android project structure
         run: |
-          echo "=== Node ===" && node --version
-          echo "=== Java ===" && java -version
-          echo "=== JAVA_HOME ===" && echo "$JAVA_HOME"
-          echo "=== Cordova ===" && cordova --version
-          echo "=== ANDROID_HOME ===" && echo "$ANDROID_HOME"
-          echo "=== ANDROID_SDK_ROOT ===" && echo "$ANDROID_SDK_ROOT"
-          echo "=== sdkmanager ===" && which sdkmanager
-          echo "=== adb ===" && which adb
-          echo "=== build-tools ===" && ls "$ANDROID_HOME/build-tools/"
-          echo "=== platforms ===" && ls "$ANDROID_HOME/platforms/"
+          PROJECT=/tmp/adarkroom-android
+          mkdir -p "$PROJECT/app/src/main/java/com/doublespeakgames/adarkroom"
+          mkdir -p "$PROJECT/app/src/main/res/values"
+          mkdir -p "$PROJECT/app/src/main/assets/www"
+          echo "Project structure created"
 
-      - name: Create Cordova project
-        run: cordova create /tmp/adarkroom-build com.doublespeakgames.adarkroom "A Dark Room"
-
-      - name: Copy game sources as www
+      - name: Copy game files to assets
         run: |
-          cd /tmp/adarkroom-build
-          rm -rf www
-          cp -r "$GITHUB_WORKSPACE" www
-          cd www
-          rm -rf .git .github tools doc
-          rm -f .gitattributes .gitignore .jshintrc
-          rm -f package.json yarn.lock dev-server.js
-          rm -f browserWarning.html mobileWarning.html
-          rm -f README.md LICENSE.md contributing.md
+          PROJECT=/tmp/adarkroom-android
+          cp -r "$GITHUB_WORKSPACE"/* "$PROJECT/app/src/main/assets/www/"
+          cd "$PROJECT/app/src/main/assets/www"
+          rm -rf tools doc .git .github
+          rm -f .gitattributes .gitignore .jshintrc package.json yarn.lock dev-server.js
+          rm -f browserWarning.html mobileWarning.html README.md LICENSE.md contributing.md
+          echo "Game files copied"
+          ls
 
-      - name: Adapt index.html for mobile
+      - name: Adapt index.html for WebView
         run: |
-          cd /tmp/adarkroom-build/www
+          cd /tmp/adarkroom-android/app/src/main/assets/www
           python3 << 'PYEOF'
           import re
-
           with open('index.html', 'r', encoding='utf-8') as f:
               html = f.read()
-
           viewport = '<meta name="viewport" content="width=device-width, initial-scale=0.42, minimum-scale=0.25, maximum-scale=2.5, user-scalable=yes" />'
-          html = re.sub(
-              r'(<meta charset="UTF-8"[^>]*>)',
-              r'\1\n\t' + viewport,
-              html, count=1
-          )
-
-          html = re.sub(
-              r'<script src="https://ajax\.googleapis\.com/ajax/libs/jquery/[^"]+"></script>\s*<script>\s*if\(!window\.jQuery\).*?</script>',
-              '<script src="lib/jquery.min.js"></script>',
-              html, count=1, flags=re.DOTALL
-          )
-
-          html = re.sub(
-              r'\s*<!-- Google tag.*?</script>\s*',
-              '\n\t',
-              html, count=1, flags=re.DOTALL
-          )
-
-          html = re.sub(
-              r'(</head>)',
-              r'\t<script src="cordova.js"></script>\n\1',
-              html, count=1
-          )
-
+          html = re.sub(r'(<meta charset="UTF-8"[^>]*>)', r'\1\n\t' + viewport, html, count=1)
+          html = re.sub(r'<script src="https://ajax\.googleapis\.com/ajax/libs/jquery/[^"]+"></script>\s*<script>\s*if\(!window\.jQuery\).*?</script>', '<script src="lib/jquery.min.js"></script>', html, count=1, flags=re.DOTALL)
+          html = re.sub(r'\s*<!-- Google tag.*?</script>\s*', '\n\t', html, count=1, flags=re.DOTALL)
           with open('index.html', 'w', encoding='utf-8') as f:
               f.write(html)
-
-          print("index.html updated successfully")
-          print("--- First 40 lines ---")
-          lines = html.split('\n')
-          for i, line in enumerate(lines[:40], 1):
-              print(f"{i:3d} {line}")
+          print("index.html adapted")
           PYEOF
 
-      - name: Write Cordova config.xml
+      - name: Write Gradle build files
         run: |
-          python3 -c '
-          import textwrap
-          config = textwrap.dedent("""\
-              <?xml version="1.0" encoding="utf-8"?>
-              <widget id="com.doublespeakgames.adarkroom" version="1.4.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
-                  <name>A Dark Room</name>
-                  <description>A minimalist text adventure, packaged for Android with Apache Cordova.</description>
-                  <author email="michael@doublespeakgames.com" href="https://github.com/doublespeakgames/adarkroom">Michael Townsend and friends</author>
-                  <content src="index.html" />
-                  <access origin="*" />
-                  <allow-intent href="http://*/*" />
-                  <allow-intent href="https://*/*" />
-                  <allow-intent href="market:*" />
-                  <preference name="Orientation" value="default" />
-                  <preference name="BackgroundColor" value="0xFF000000" />
-                  <preference name="android-targetSdkVersion" value="34" />
-                  <preference name="android-compileSdkVersion" value="34" />
-                  <platform name="android">
-                      <preference name="android-minSdkVersion" value="24" />
-                      <icon src="www/img/adr.png" />
-                  </platform>
-              </widget>
-          """)
-          with open("/tmp/adarkroom-build/config.xml", "w", encoding="utf-8") as f:
-              f.write(config)
-          print("config.xml written successfully")
-          '
+          PROJECT=/tmp/adarkroom-android
 
-      - name: Add Android platform
+          cat > "$PROJECT/settings.gradle" << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "ADarkRoom"
+          include ':app'
+          EOF
+
+          cat > "$PROJECT/build.gradle" << 'EOF'
+          plugins {
+              id 'com.android.application' version '8.1.4' apply false
+          }
+          EOF
+
+          cat > "$PROJECT/gradle.properties" << 'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat > "$PROJECT/app/build.gradle" << 'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.doublespeakgames.adarkroom'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.doublespeakgames.adarkroom"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.4.0"
+              }
+              buildTypes {
+                  debug {
+                      minifyEnabled false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+
+          echo "Gradle build files written"
+
+      - name: Write AndroidManifest.xml
         run: |
-          cd /tmp/adarkroom-build
-          cordova platform add android@13
-          echo "=== Platforms ==="
-          cordova platform ls
-          echo "=== config.xml ==="
-          cat config.xml
+          cat > /tmp/adarkroom-android/app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:allowBackup="true"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen"
+                  android:usesCleartextTraffic="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          echo "AndroidManifest.xml written"
+
+      - name: Write MainActivity.java
+        run: |
+          cat > /tmp/adarkroom-android/app/src/main/java/com/doublespeakgames/adarkroom/MainActivity.java << 'EOF'
+          package com.doublespeakgames.adarkroom;
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          public class MainActivity extends Activity {
+              private WebView webView;
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  webView = new WebView(this);
+                  setContentView(webView);
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setAllowFileAccess(true);
+                  settings.setAllowContentAccess(true);
+                  settings.setLoadWithOverviewMode(true);
+                  settings.setUseWideViewPort(true);
+                  settings.setBuiltInZoomControls(true);
+                  settings.setDisplayZoomControls(false);
+                  settings.setMediaPlaybackRequiresUserGesture(false);
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                          return false;
+                      }
+                  });
+                  webView.loadUrl("file:///android_asset/www/index.html");
+              }
+              @Override
+              public void onBackPressed() {
+                  if (webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          EOF
+          echo "MainActivity.java written"
+
+      - name: Write resources
+        run: |
+          cat > /tmp/adarkroom-android/app/src/main/res/values/strings.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">A Dark Room</string>
+          </resources>
+          EOF
+          echo "Resources written"
 
       - name: Build Debug APK
-        id: build
         run: |
-          cd /tmp/adarkroom-build
-          set +e
-          cordova build android --debug 2>&1 | tee /tmp/build.log
-          BUILD_EXIT=${PIPESTATUS[0]}
-          echo "build_exit=$BUILD_EXIT" >> "$GITHUB_OUTPUT"
-          echo "Build exit code: $BUILD_EXIT"
-          if [ "$BUILD_EXIT" -ne 0 ]; then
-            echo "=== Build failed. Last 100 lines ==="
-            tail -100 /tmp/build.log
-          fi
-          exit $BUILD_EXIT
+          cd /tmp/adarkroom-android
+          echo "=== Checking gradle ==="
+          which gradle || echo "gradle not in PATH"
+          gradle --version 2>&1 | head -5
+          echo "=== Starting build ==="
+          gradle assembleDebug 2>&1 | tail -100
+          echo "BUILD_EXIT=${PIPESTATUS[0]}"
+          exit ${PIPESTATUS[0]}
         shell: bash
-
-      - name: Find APK
-        id: find_apk
-        if: success()
-        run: |
-          APK=$(find /tmp/adarkroom-build/platforms/android/app/build/outputs/apk/debug -name "*.apk" | head -1)
-          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
-          echo "APK: $APK"
-          ls -lh "$APK"
 
       - name: Upload APK artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: adarkroom-debug-apk
-          path: ${{ steps.find_apk.outputs.apk_path }}
-          if-no-files-found: error
+          path: /tmp/adarkroom-android/app/build/outputs/apk/debug/*.apk
 
-      - name: Upload build log on failure
+      - name: Upload build reports on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: /tmp/build.log
+          name: build-reports
+          path: |
+            /tmp/adarkroom-android/app/build/reports/
+            /tmp/adarkroom-android/build/
           if-no-files-found: ignore
