@@ -22,50 +22,48 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
+      - name: Build APK
+        id: build
         run: |
-          ANDROID_SDK=/usr/local/lib/android/sdk
-          echo "ANDROID_HOME=$ANDROID_SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK" >> "$GITHUB_ENV"
-          echo "$ANDROID_SDK/platform-tools" >> "$GITHUB_PATH"
-          echo "$ANDROID_SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "Pre-installed SDK contents:"
-          ls -la "$ANDROID_SDK" 2>/dev/null || echo "No pre-installed SDK"
+          set -e
+          LOGFILE=/tmp/build.log
+          exec > >(tee -a "$LOGFILE") 2>&1
+
+          echo "=== Step 1: Setup Android SDK ==="
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+          export PATH=$PATH:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls -la "$ANDROID_HOME" 2>/dev/null || echo "No pre-installed SDK at $ANDROID_HOME"
+
+          echo "=== Step 2: Install SDK components ==="
           yes | sdkmanager --licenses || true
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           sdkmanager --list_installed | head -20
 
-      - name: Setup Gradle
-        run: |
+          echo "=== Step 3: Download Gradle ==="
           GRADLE_VERSION=8.4
           cd /tmp
           curl -L -o gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
           unzip -q gradle.zip -d /opt
-          echo "/opt/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+          export PATH=/opt/gradle-${GRADLE_VERSION}/bin:$PATH
           gradle --version | head -5
 
-      - name: Create Android project structure
-        run: |
+          echo "=== Step 4: Create project structure ==="
           PROJECT=/tmp/adarkroom-android
           mkdir -p "$PROJECT/app/src/main/java/com/doublespeakgames/adarkroom"
           mkdir -p "$PROJECT/app/src/main/res/values"
           mkdir -p "$PROJECT/app/src/main/assets/www"
-          echo "Project structure created"
 
-      - name: Copy game files to assets
-        run: |
-          PROJECT=/tmp/adarkroom-android
+          echo "=== Step 5: Copy game files ==="
           cp -r "$GITHUB_WORKSPACE"/* "$PROJECT/app/src/main/assets/www/"
           cd "$PROJECT/app/src/main/assets/www"
           rm -rf tools doc .git .github
           rm -f .gitattributes .gitignore .jshintrc package.json yarn.lock dev-server.js
           rm -f browserWarning.html mobileWarning.html README.md LICENSE.md contributing.md
-          echo "Game files copied"
           ls
 
-      - name: Adapt index.html for WebView
-        run: |
-          cd /tmp/adarkroom-android/app/src/main/assets/www
+          echo "=== Step 6: Adapt index.html ==="
           python3 << 'PYEOF'
           import re
           with open('index.html', 'r', encoding='utf-8') as f:
@@ -79,11 +77,10 @@ jobs:
           print("index.html adapted")
           PYEOF
 
-      - name: Write Gradle build files
-        run: |
-          PROJECT=/tmp/adarkroom-android
+          echo "=== Step 7: Write Gradle files ==="
+          cd "$PROJECT"
 
-          cat > "$PROJECT/settings.gradle" << 'EOF'
+          cat > settings.gradle << 'EOF'
           pluginManagement {
               repositories {
                   google()
@@ -102,19 +99,19 @@ jobs:
           include ':app'
           EOF
 
-          cat > "$PROJECT/build.gradle" << 'EOF'
+          cat > build.gradle << 'EOF'
           plugins {
               id 'com.android.application' version '8.1.4' apply false
           }
           EOF
 
-          cat > "$PROJECT/gradle.properties" << 'EOF'
+          cat > gradle.properties << 'EOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
           android.nonTransitiveRClass=true
           EOF
 
-          cat > "$PROJECT/app/build.gradle" << 'EOF'
+          cat > app/build.gradle << 'EOF'
           plugins {
               id 'com.android.application'
           }
@@ -140,11 +137,8 @@ jobs:
           }
           EOF
 
-          echo "Gradle build files written"
-
-      - name: Write AndroidManifest.xml
-        run: |
-          cat > /tmp/adarkroom-android/app/src/main/AndroidManifest.xml << 'EOF'
+          echo "=== Step 8: Write AndroidManifest.xml ==="
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <application
@@ -165,11 +159,9 @@ jobs:
               </application>
           </manifest>
           EOF
-          echo "AndroidManifest.xml written"
 
-      - name: Write MainActivity.java
-        run: |
-          cat > /tmp/adarkroom-android/app/src/main/java/com/doublespeakgames/adarkroom/MainActivity.java << 'EOF'
+          echo "=== Step 9: Write MainActivity.java ==="
+          cat > app/src/main/java/com/doublespeakgames/adarkroom/MainActivity.java << 'EOF'
           package com.doublespeakgames.adarkroom;
           import android.app.Activity;
           import android.os.Bundle;
@@ -211,28 +203,26 @@ jobs:
               }
           }
           EOF
-          echo "MainActivity.java written"
 
-      - name: Write resources
-        run: |
-          cat > /tmp/adarkroom-android/app/src/main/res/values/strings.xml << 'EOF'
+          echo "=== Step 10: Write resources ==="
+          cat > app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">A Dark Room</string>
           </resources>
           EOF
-          echo "Resources written"
 
-      - name: Build Debug APK
-        run: |
-          cd /tmp/adarkroom-android
-          echo "=== Checking gradle ==="
-          which gradle || echo "gradle not in PATH"
-          gradle --version 2>&1 | head -5
-          echo "=== Starting build ==="
-          gradle assembleDebug 2>&1 | tail -100
-          echo "BUILD_EXIT=${PIPESTATUS[0]}"
-          exit ${PIPESTATUS[0]}
+          echo "=== Step 11: Build APK ==="
+          gradle assembleDebug --no-daemon
+
+          echo "=== Step 12: Find APK ==="
+          APK=$(find "$PROJECT/app/build/outputs/apk/debug" -name "*.apk" | head -1)
+          echo "APK: $APK"
+          ls -lh "$APK"
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+
+          echo "=== BUILD SUCCESS ==="
+
         shell: bash
 
       - name: Upload APK artifact
@@ -240,14 +230,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: adarkroom-debug-apk
-          path: /tmp/adarkroom-android/app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.build.outputs.apk_path }}
 
-      - name: Upload build reports on failure
-        if: failure()
+      - name: Upload build log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-reports
-          path: |
-            /tmp/adarkroom-android/app/build/reports/
-            /tmp/adarkroom-android/build/
+          name: build-log
+          path: /tmp/build.log
           if-no-files-found: ignore
