@@ -51,6 +51,7 @@ jobs:
 
           echo "=== Step 4: Create project structure ==="
           PROJECT=/tmp/adarkroom-android
+          export PROJECT
           mkdir -p "$PROJECT/app/src/main/java/com/doublespeakgames/adarkroom"
           mkdir -p "$PROJECT/app/src/main/res/values"
           mkdir -p "$PROJECT/app/src/main/assets/www"
@@ -63,7 +64,32 @@ jobs:
           rm -f browserWarning.html mobileWarning.html README.md LICENSE.md contributing.md
           ls
 
-          echo "=== Step 6: Adapt index.html ==="
+          echo "=== Step 6: Patch engine.js (skip mobile warning) ==="
+          python3 << 'PYEOF'
+          with open('script/engine.js', 'r', encoding='utf-8') as f:
+              js = f.read()
+          old = (
+              "      // Check for mobile\n"
+              "      if(Engine.isMobile()) {\n"
+              "        window.location = 'mobileWarning.html';\n"
+              "      }"
+          )
+          new = (
+              "      // Disabled: skip mobile warning in Android WebView\n"
+              "      // if(Engine.isMobile()) {\n"
+              "      //   window.location = 'mobileWarning.html';\n"
+              "      // }"
+          )
+          if old in js:
+              js = js.replace(old, new)
+              with open('script/engine.js', 'w', encoding='utf-8') as f:
+                  f.write(js)
+              print("engine.js patched: mobile warning disabled")
+          else:
+              print("engine.js: pattern not found (already patched?)")
+          PYEOF
+
+          echo "=== Step 6b: Adapt index.html ==="
           python3 << 'PYEOF'
           import re
           with open('index.html', 'r', encoding='utf-8') as f:
@@ -143,6 +169,8 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <application
                   android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
                   android:label="@string/app_name"
                   android:supportsRtl="true"
                   android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen"
@@ -211,6 +239,57 @@ jobs:
               <string name="app_name">A Dark Room</string>
           </resources>
           EOF
+
+          echo "=== Step 10b: Generate app icons (PNG via stdlib) ==="
+          python3 << 'PYEOF'
+          import struct, zlib, os
+
+          def draw_flame(w, h):
+              pixels = bytearray()
+              cx, cy = w / 2, h / 2
+              r_outer = min(w, h) * 0.42
+              bg = (24, 16, 12)
+              for y in range(h):
+                  pixels.append(0)
+                  for x in range(w):
+                      dx, dy = x - cx, y - cy
+                      d = (dx*dx + dy*dy) ** 0.5
+                      if d < r_outer * 0.55:
+                          pixels.extend([255, 90, 20, 255])
+                      elif d < r_outer * 0.85:
+                          t = (d - r_outer*0.55) / (r_outer*0.30)
+                          cr = int(255 * (1 - t) + bg[0] * t)
+                          cg = int(90 * (1 - t) + bg[1] * t)
+                          cb = int(20 * (1 - t) + bg[2] * t)
+                          pixels.extend([cr, cg, cb, 255])
+                      else:
+                          pixels.extend([bg[0], bg[1], bg[2], 255])
+              raw = bytes(pixels)
+              def chunk(tag, data):
+                  return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)
+              sig = b'\x89PNG\r\n\x1a\n'
+              ihdr = struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)
+              idat = zlib.compress(raw, 9)
+              return sig + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b'')
+
+          project = os.environ['PROJECT']
+          sizes = {
+              'mipmap-mdpi': 48,
+              'mipmap-hdpi': 72,
+              'mipmap-xhdpi': 96,
+              'mipmap-xxhdpi': 144,
+              'mipmap-xxxhdpi': 192,
+          }
+          for folder, size in sizes.items():
+              d = f"{project}/app/src/main/res/{folder}"
+              os.makedirs(d, exist_ok=True)
+              png = draw_flame(size, size)
+              with open(f'{d}/ic_launcher.png', 'wb') as f:
+                  f.write(png)
+              with open(f'{d}/ic_launcher_round.png', 'wb') as f:
+                  f.write(png)
+              print(f"Generated {folder}/ic_launcher.png ({size}x{size}, {len(png)} bytes)")
+          PYEOF
 
           echo "=== Step 11: Build APK ==="
           gradle assembleDebug --no-daemon
